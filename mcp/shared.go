@@ -480,6 +480,11 @@ type RequestExtra struct {
 	TokenInfo *auth.TokenInfo // bearer token info (e.g. from OAuth) if any
 	Header    http.Header     // header from HTTP request, if any
 
+	// TransportAuth carries transport-specific identity information.
+	// For SSH transports, this is typically *sshtransport.Permission.
+	// Callers should type-assert to the expected concrete type.
+	TransportAuth any
+
 	// If set, CloseSSEStream explicitly closes the current SSE request stream.
 	//
 	// [SEP-1699] introduced server-side SSE stream disconnection: for

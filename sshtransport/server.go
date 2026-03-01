@@ -378,11 +378,12 @@ func (h *SSHHandler) handleSession(ctx context.Context, ch ssh.Channel, reqs <-c
 func (h *SSHHandler) serveMCP(ctx context.Context, ch ssh.Channel, perm *Permission) {
 	logger := h.opts.logger()
 
-	// Wrap SSH channel as MCP transport.
-	transport := &mcp.IOTransport{
+	// Wrap SSH channel as MCP transport, injecting identity into requests.
+	ioTransport := &mcp.IOTransport{
 		Reader: io.NopCloser(ch),
 		Writer: writeCloser{ch},
 	}
+	transport := &authTransport{inner: ioTransport, perm: perm}
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	sessionCtx = ContextWithPermissions(sessionCtx, perm)

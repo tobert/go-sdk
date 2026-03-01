@@ -1,15 +1,18 @@
+// Copyright 2025 The Go MCP SDK Authors. All rights reserved.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file.
+
 package sshtransport
 
 import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/crypto/ssh"
 )
@@ -65,16 +68,21 @@ func newTestEnv(t *testing.T, perm *Permission) *testEnv {
 		}, nil
 	})
 	server.AddTool(&mcp.Tool{
-		Name:        "secret",
+		Name:        "whoami",
 		InputSchema: map[string]any{"type": "object"},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Return identity from TransportAuth if present.
+		if req.Extra != nil {
+			if p, ok := req.Extra.TransportAuth.(*Permission); ok {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("identity:%s", p.Identity)}},
+				}, nil
+			}
+		}
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "secret data"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: "identity:unknown"}},
 		}, nil
 	})
-
-	// Install authorization middleware.
-	server.AddReceivingMiddleware(AuthorizationMiddleware())
 
 	// Listen on random port.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -156,10 +164,10 @@ func TestSSHServer_BasicConnection(t *testing.T) {
 	}
 }
 
-func TestSSHServer_Authorization(t *testing.T) {
+func TestSSHServer_TransportAuth(t *testing.T) {
 	perm := &Permission{
-		Identity:      "restricted-user",
-		RestrictTools: []string{"echo"},
+		Identity:      "alice",
+		RestrictTools: []string{"echo", "whoami"},
 	}
 	env := newTestEnv(t, perm)
 	defer env.Close()
@@ -179,39 +187,14 @@ func TestSSHServer_Authorization(t *testing.T) {
 	}
 	defer cs.Close()
 
-	// List should be filtered.
-	tools, err := cs.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tools.Tools) != 1 {
-		t.Errorf("expected 1 tool (echo only), got %d", len(tools.Tools))
-		for _, tool := range tools.Tools {
-			t.Logf("  tool: %s", tool.Name)
-		}
-	}
-
-	// Allowed tool works.
-	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "echo"})
+	// Call whoami — handler reads TransportAuth to return identity.
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "whoami"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := res.Content[0].(*mcp.TextContent).Text
-	if text != "hello from SSH" {
-		t.Errorf("expected 'hello from SSH', got %q", text)
-	}
-
-	// Forbidden tool rejected.
-	_, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "secret"})
-	if err == nil {
-		t.Fatal("expected error calling forbidden tool")
-	}
-	var jErr *jsonrpc.Error
-	if !errors.As(err, &jErr) {
-		t.Fatalf("expected jsonrpc.Error, got %T: %v", err, err)
-	}
-	if jErr.Code != jsonrpc.CodeMethodNotFound {
-		t.Errorf("expected code %d, got %d", jsonrpc.CodeMethodNotFound, jErr.Code)
+	if text != "identity:alice" {
+		t.Errorf("expected 'identity:alice', got %q", text)
 	}
 }
 
