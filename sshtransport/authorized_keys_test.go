@@ -58,12 +58,12 @@ func TestParseAuthorizedKeysFile_BareKeys(t *testing.T) {
 	if perm1.Identity != "amy@workstation" {
 		t.Errorf("key1 identity = %q, want %q", perm1.Identity, "amy@workstation")
 	}
-	// No restrictions.
-	if perm1.RestrictTools != nil {
-		t.Errorf("key1 RestrictTools = %v, want nil", perm1.RestrictTools)
+	// Bare key defaults to ["*"] (allow all).
+	if len(perm1.RestrictTools) != 1 || perm1.RestrictTools[0] != "*" {
+		t.Errorf("key1 RestrictTools = %v, want [\"*\"]", perm1.RestrictTools)
 	}
 	if !perm1.AllowTool("anything") {
-		t.Error("unrestricted key should allow any tool")
+		t.Error("bare key should allow any tool")
 	}
 
 	fp2 := ssh.FingerprintSHA256(key2)
@@ -217,13 +217,13 @@ func TestParseAuthorizedKeysFile_NotFound(t *testing.T) {
 
 func TestPermission_NilReceiver(t *testing.T) {
 	var p *Permission
-	if !p.AllowTool("anything") {
-		t.Error("nil Permission should allow all tools")
+	if p.AllowTool("anything") {
+		t.Error("nil Permission should deny all tools")
 	}
-	if !p.AllowResource("anything") {
-		t.Error("nil Permission should allow all resources")
+	if p.AllowResource("anything") {
+		t.Error("nil Permission should deny all resources")
 	}
-	if !p.AllowPrompt("anything") {
-		t.Error("nil Permission should allow all prompts")
+	if p.AllowPrompt("anything") {
+		t.Error("nil Permission should deny all prompts")
 	}
 }

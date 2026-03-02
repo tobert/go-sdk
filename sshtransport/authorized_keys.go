@@ -12,7 +12,8 @@ import (
 )
 
 // Permission describes the identity and access restrictions for an
-// authenticated SSH client. Nil restriction slices mean unrestricted access.
+// authenticated SSH client. Nil restriction slices deny all access;
+// use []string{"*"} to allow all.
 type Permission struct {
 	Identity          string
 	RestrictTools     []string
@@ -21,28 +22,28 @@ type Permission struct {
 }
 
 // AllowTool reports whether this permission allows calling the named tool.
-// If RestrictTools is nil, all tools are allowed.
+// A nil Permission or nil RestrictTools denies access.
 func (p *Permission) AllowTool(name string) bool {
-	if p == nil || p.RestrictTools == nil {
-		return true
+	if p == nil {
+		return false
 	}
 	return MatchAnyGlob(p.RestrictTools, name)
 }
 
 // AllowResource reports whether this permission allows reading the given resource URI.
-// If RestrictResources is nil, all resources are allowed.
+// A nil Permission or nil RestrictResources denies access.
 func (p *Permission) AllowResource(uri string) bool {
-	if p == nil || p.RestrictResources == nil {
-		return true
+	if p == nil {
+		return false
 	}
 	return MatchAnyGlob(p.RestrictResources, uri)
 }
 
 // AllowPrompt reports whether this permission allows using the named prompt.
-// If RestrictPrompts is nil, all prompts are allowed.
+// A nil Permission or nil RestrictPrompts denies access.
 func (p *Permission) AllowPrompt(name string) bool {
-	if p == nil || p.RestrictPrompts == nil {
-		return true
+	if p == nil {
+		return false
 	}
 	return MatchAnyGlob(p.RestrictPrompts, name)
 }
@@ -143,17 +144,23 @@ func (ak *AuthorizedKeys) Reload() error {
 
 // parseAuthorizedKeyLine parses a single authorized keys line.
 func parseAuthorizedKeyLine(line string) (*Permission, ssh.PublicKey, error) {
-	perm := &Permission{}
-
 	// Try parsing as a bare key first (no options).
+	// Bare keys default to ["*"] (allow all).
 	if pubKey, comment, err := tryParseKey(line); err == nil {
+		perm := &Permission{
+			RestrictTools:     []string{"*"},
+			RestrictResources: []string{"*"},
+			RestrictPrompts:   []string{"*"},
+		}
 		if comment != "" {
 			perm.Identity = comment
 		}
 		return perm, pubKey, nil
 	}
 
-	// Parse options prefix.
+	// Parse options prefix. Options start with nil slices;
+	// only fields explicitly set in options will be non-nil.
+	perm := &Permission{}
 	rest, err := parseOptions(line, perm)
 	if err != nil {
 		return nil, nil, err
@@ -166,6 +173,16 @@ func parseAuthorizedKeyLine(line string) (*Permission, ssh.PublicKey, error) {
 	// Comment becomes identity if not set by options.
 	if perm.Identity == "" && comment != "" {
 		perm.Identity = comment
+	}
+	// Fields not explicitly restricted by options default to ["*"] (allow all).
+	if perm.RestrictTools == nil {
+		perm.RestrictTools = []string{"*"}
+	}
+	if perm.RestrictResources == nil {
+		perm.RestrictResources = []string{"*"}
+	}
+	if perm.RestrictPrompts == nil {
+		perm.RestrictPrompts = []string{"*"}
 	}
 	return perm, pubKey, nil
 }

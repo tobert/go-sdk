@@ -281,7 +281,10 @@ func permFromSSH(sshPerm *ssh.Permissions) *Permission {
 		return &Permission{}
 	}
 	perm := &Permission{
-		Identity: sshPerm.Extensions["identity"],
+		Identity:          sshPerm.Extensions["identity"],
+		RestrictTools:     []string{"*"},
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
 	}
 	if v, ok := sshPerm.Extensions["restrict-tools"]; ok {
 		json.Unmarshal([]byte(v), &perm.RestrictTools)

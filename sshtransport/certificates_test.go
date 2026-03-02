@@ -118,14 +118,18 @@ func TestPermissionsFromCertificate_NoExtensions(t *testing.T) {
 	if perm.Identity != "service-account" {
 		t.Errorf("identity = %q, want %q", perm.Identity, "service-account")
 	}
+	// No extensions → defaults to ["*"] (allow all), not nil.
+	if len(perm.RestrictTools) != 1 || perm.RestrictTools[0] != "*" {
+		t.Errorf("RestrictTools = %v, want [\"*\"]", perm.RestrictTools)
+	}
 	if !perm.AllowTool("anything") {
-		t.Error("should allow all tools (no restrictions)")
+		t.Error("should allow all tools (default [\"*\"])")
 	}
 	if !perm.AllowResource("anything") {
-		t.Error("should allow all resources (no restrictions)")
+		t.Error("should allow all resources (default [\"*\"])")
 	}
 	if !perm.AllowPrompt("anything") {
-		t.Error("should allow all prompts (no restrictions)")
+		t.Error("should allow all prompts (default [\"*\"])")
 	}
 }
 
@@ -164,6 +168,17 @@ func TestMergePermissions_NilCases(t *testing.T) {
 	result = MergePermissions(perm, nil)
 	if result.Identity != "test" {
 		t.Errorf("nil key: identity = %q, want %q", result.Identity, "test")
+	}
+
+	// Both non-nil but one has nil slice → intersect returns nil (deny).
+	withNil := &Permission{Identity: "a", RestrictTools: nil}
+	withStar := &Permission{Identity: "b", RestrictTools: []string{"*"}}
+	merged := MergePermissions(withNil, withStar)
+	if merged.RestrictTools != nil {
+		t.Errorf("nil intersect [\"*\"] should be nil (deny), got %v", merged.RestrictTools)
+	}
+	if merged.AllowTool("anything") {
+		t.Error("merged with nil side should deny tools")
 	}
 }
 

@@ -22,9 +22,13 @@ const (
 // Extension values are comma-separated glob patterns.
 func PermissionsFromCertificate(cert *ssh.Certificate) *Permission {
 	perm := &Permission{
-		Identity: cert.KeyId,
+		Identity:          cert.KeyId,
+		RestrictTools:     []string{"*"},
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
 	}
 
+	// Extensions override the defaults when present.
 	if v, ok := cert.Extensions[extRestrictTools]; ok && v != "" {
 		perm.RestrictTools = splitPatterns(v)
 	}
@@ -52,7 +56,7 @@ func splitPatterns(s string) []string {
 
 // MergePermissions combines certificate and authorized key permissions using
 // AND logic: a request is only authorized if both permit it. Nil restriction
-// slices are treated as "unrestricted" (allow all).
+// slices deny access; use []string{"*"} for unrestricted.
 //
 // The merged identity comes from the certificate (certPerms) if set,
 // falling back to the key identity.
@@ -79,38 +83,12 @@ func MergePermissions(certPerms, keyPerms *Permission) *Permission {
 }
 
 // intersectPatterns implements AND logic for restriction patterns.
-// If either is nil (unrestricted), the other applies.
-// If both are set, both pattern sets are kept — the AllowX methods
-// require matching against each set independently.
+// If either is nil (denied), the result is nil (deny).
+// If both are set, both pattern sets are merged.
 func intersectPatterns(a, b []string) []string {
-	if a == nil {
-		return b
+	if a == nil || b == nil {
+		return nil // either side denies = deny
 	}
-	if b == nil {
-		return a
-	}
-	// When both are set, we serialize as a JSON array of arrays
-	// and store in a special format. For simplicity in this prototype,
-	// we keep both sets — enforcement requires matching both.
-	// However, since Permission.AllowTool uses MatchAnyGlob on a single
-	// slice, we need a different approach for AND semantics.
-	//
-	// For the prototype, we take the intersection approach: keep all patterns
-	// from both sets. The client must match at least one pattern from
-	// EACH set. To implement this properly, Permission needs to support
-	// multiple restriction sets.
-	//
-	// For now: return the more restrictive set (shorter list), or both
-	// combined if they need AND semantics. The proper fix is to make
-	// Permission support layered restrictions.
-	//
-	// Simple approach: merge both — any tool must match patterns from
-	// BOTH cert and key. Since we can't express AND in a single flat list,
-	// we serialize both sets into the Permission and change AllowX to
-	// check both. But that requires changing Permission structure.
-	//
-	// Pragmatic compromise for prototype: encode both as JSON so the
-	// Permission struct can carry the info.
 	return mergedRestrictions(a, b)
 }
 
