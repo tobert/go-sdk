@@ -182,6 +182,51 @@ func TestMergePermissions_NilCases(t *testing.T) {
 	}
 }
 
+func TestPermissionsFromCertificate_EmptyExtension(t *testing.T) {
+	_, userPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPub, err := ssh.NewPublicKey(userPriv.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caSigner, err := ssh.NewSignerFromKey(caPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty extension string should deny (empty pattern list), not allow.
+	cert := &ssh.Certificate{
+		CertType:        ssh.UserCert,
+		Key:             userPub,
+		KeyId:           "restricted",
+		ValidPrincipals: []string{"mcp-user"},
+		ValidBefore:     ssh.CertTimeInfinity,
+		Permissions: ssh.Permissions{
+			Extensions: map[string]string{
+				"restrict-tools@modelcontextprotocol.io": "",
+			},
+		},
+	}
+	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
+		t.Fatal(err)
+	}
+
+	perm := PermissionsFromCertificate(cert)
+	if perm.AllowTool("anything") {
+		t.Error("empty restrict-tools extension should deny all tools")
+	}
+	// Resources and prompts unset → default ["*"] (allow all).
+	if !perm.AllowResource("anything") {
+		t.Error("unset resources should allow all")
+	}
+}
+
 func TestMergedPermission_AND_Logic(t *testing.T) {
 	certPerms := &Permission{
 		RestrictTools: []string{"query_*", "list_*"},
@@ -205,5 +250,69 @@ func TestMergedPermission_AND_Logic(t *testing.T) {
 	// delete_all matches neither.
 	if mp.AllowTool("delete_all") {
 		t.Error("should NOT allow delete_all")
+	}
+}
+
+func TestMergedPermission_NilSides(t *testing.T) {
+	keyOnly := &MergedPermission{
+		KeyPerms: &Permission{
+			Identity:      "bob",
+			RestrictTools: []string{"query_*"},
+		},
+	}
+	// Nil cert side → only key perms checked.
+	if !keyOnly.AllowTool("query_spans") {
+		t.Error("key-only: should allow query_spans")
+	}
+	if keyOnly.AllowTool("delete_all") {
+		t.Error("key-only: should NOT allow delete_all")
+	}
+
+	certOnly := &MergedPermission{
+		CertPerms: &Permission{
+			Identity:      "alice",
+			RestrictTools: []string{"*"},
+		},
+	}
+	// Nil key side → only cert perms checked.
+	if !certOnly.AllowTool("anything") {
+		t.Error("cert-only: should allow anything")
+	}
+
+	// Both nil → deny.
+	empty := &MergedPermission{}
+	if empty.AllowTool("anything") {
+		t.Error("both nil: should deny")
+	}
+
+	// Nil MergedPermission → deny.
+	var nilMP *MergedPermission
+	if nilMP.AllowTool("anything") {
+		t.Error("nil MergedPermission: should deny")
+	}
+}
+
+func TestMergedPermission_Identity(t *testing.T) {
+	// Cert identity preferred.
+	mp := &MergedPermission{
+		CertPerms: &Permission{Identity: "cert-alice"},
+		KeyPerms:  &Permission{Identity: "key-bob"},
+	}
+	if mp.Identity() != "cert-alice" {
+		t.Errorf("Identity() = %q, want %q", mp.Identity(), "cert-alice")
+	}
+
+	// Falls back to key identity.
+	mp2 := &MergedPermission{
+		KeyPerms: &Permission{Identity: "key-bob"},
+	}
+	if mp2.Identity() != "key-bob" {
+		t.Errorf("Identity() = %q, want %q", mp2.Identity(), "key-bob")
+	}
+
+	// Nil → empty.
+	var nilMP *MergedPermission
+	if nilMP.Identity() != "" {
+		t.Errorf("nil Identity() = %q, want empty", nilMP.Identity())
 	}
 }

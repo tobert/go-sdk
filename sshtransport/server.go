@@ -201,7 +201,10 @@ func (h *SSHHandler) Addr() string {
 func (h *SSHHandler) publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	logger := h.opts.logger()
 
-	// Check certificates first.
+	var certPerm *Permission
+	var keyPerm *Permission
+
+	// Check certificates.
 	if cert, ok := key.(*ssh.Certificate); ok && len(h.opts.TrustedCAs) > 0 {
 		certChecker := &ssh.CertChecker{
 			IsUserAuthority: func(auth ssh.PublicKey) bool {
@@ -217,29 +220,34 @@ func (h *SSHHandler) publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey)
 			logger.Warn("certificate validation failed", "user", conn.User(), "error", err)
 			return nil, fmt.Errorf("certificate validation failed: %w", err)
 		}
-
-		// Check principals.
 		if !h.matchesPrincipal(cert) {
 			logger.Warn("no matching principal", "user", conn.User(), "principals", cert.ValidPrincipals)
 			return nil, fmt.Errorf("no matching principal")
 		}
-
-		perm := PermissionsFromCertificate(cert)
-		return permToSSH(perm, cert.KeyId), nil
+		certPerm = PermissionsFromCertificate(cert)
 	}
 
-	// Check authorized keys.
+	// Check authorized keys (also for cert keys — the underlying public
+	// key may have additional restrictions in authorized_keys).
 	if h.opts.AuthorizedKeys != nil {
-		fp := ssh.FingerprintSHA256(key)
-		perm, ok := h.opts.AuthorizedKeys.Lookup(fp)
-		if ok {
+		lookupKey := key
+		if cert, ok := key.(*ssh.Certificate); ok {
+			lookupKey = cert.Key // use the underlying key, not the cert
+		}
+		fp := ssh.FingerprintSHA256(lookupKey)
+		if perm, ok := h.opts.AuthorizedKeys.Lookup(fp); ok {
 			logger.Info("key authenticated", "fingerprint", fp, "identity", perm.Identity)
-			return permToSSH(perm, perm.Identity), nil
+			keyPerm = perm
 		}
 	}
 
-	logger.Warn("authentication failed", "user", conn.User(), "key_type", key.Type())
-	return nil, fmt.Errorf("unknown key")
+	// Must have at least one auth method succeed.
+	if certPerm == nil && keyPerm == nil {
+		logger.Warn("authentication failed", "user", conn.User(), "key_type", key.Type())
+		return nil, fmt.Errorf("unknown key")
+	}
+
+	return mergedPermToSSH(certPerm, keyPerm), nil
 }
 
 func (h *SSHHandler) matchesPrincipal(cert *ssh.Certificate) bool {
@@ -253,49 +261,88 @@ func (h *SSHHandler) matchesPrincipal(cert *ssh.Certificate) bool {
 	return false
 }
 
-// permToSSH encodes a Permission into ssh.Permissions.Extensions.
-func permToSSH(perm *Permission, identity string) *ssh.Permissions {
-	ext := map[string]string{
-		"identity": identity,
+// mergedPermToSSH encodes cert and key permissions separately into
+// ssh.Permissions.Extensions using prefixed keys. This preserves both
+// sets for proper AND-logic checking on the other side.
+func mergedPermToSSH(certPerm, keyPerm *Permission) *ssh.Permissions {
+	ext := make(map[string]string)
+
+	// Identity: prefer cert, fall back to key.
+	if certPerm != nil && certPerm.Identity != "" {
+		ext["identity"] = certPerm.Identity
+	} else if keyPerm != nil {
+		ext["identity"] = keyPerm.Identity
 	}
-	if perm != nil {
+
+	encodePerm := func(prefix string, perm *Permission) {
+		if perm == nil {
+			return
+		}
 		if perm.RestrictTools != nil {
 			data, _ := json.Marshal(perm.RestrictTools)
-			ext["restrict-tools"] = string(data)
+			ext[prefix+"restrict-tools"] = string(data)
 		}
 		if perm.RestrictResources != nil {
 			data, _ := json.Marshal(perm.RestrictResources)
-			ext["restrict-resources"] = string(data)
+			ext[prefix+"restrict-resources"] = string(data)
 		}
 		if perm.RestrictPrompts != nil {
 			data, _ := json.Marshal(perm.RestrictPrompts)
-			ext["restrict-prompts"] = string(data)
+			ext[prefix+"restrict-prompts"] = string(data)
 		}
 	}
+
+	encodePerm("cert-", certPerm)
+	encodePerm("key-", keyPerm)
+
 	return &ssh.Permissions{Extensions: ext}
 }
 
-// permFromSSH decodes a Permission from ssh.Permissions.Extensions.
-func permFromSSH(sshPerm *ssh.Permissions) *Permission {
+// mergedPermFromSSH decodes a MergedPermission from ssh.Permissions.Extensions.
+// Each side defaults to nil (deny). Fields are only set when the extension key
+// is present AND the JSON unmarshals successfully — fail-closed on bad data.
+func mergedPermFromSSH(sshPerm *ssh.Permissions) *MergedPermission {
 	if sshPerm == nil {
-		return &Permission{}
+		return &MergedPermission{}
 	}
-	perm := &Permission{
-		Identity:          sshPerm.Extensions["identity"],
-		RestrictTools:     []string{"*"},
-		RestrictResources: []string{"*"},
-		RestrictPrompts:   []string{"*"},
+
+	decodePerm := func(prefix string) *Permission {
+		// Check if any extensions exist for this prefix.
+		hasTools := false
+		hasResources := false
+		hasPrompts := false
+		var tools, resources, prompts []string
+
+		if v, ok := sshPerm.Extensions[prefix+"restrict-tools"]; ok {
+			hasTools = true
+			json.Unmarshal([]byte(v), &tools) // nil on error = deny
+		}
+		if v, ok := sshPerm.Extensions[prefix+"restrict-resources"]; ok {
+			hasResources = true
+			json.Unmarshal([]byte(v), &resources)
+		}
+		if v, ok := sshPerm.Extensions[prefix+"restrict-prompts"]; ok {
+			hasPrompts = true
+			json.Unmarshal([]byte(v), &prompts)
+		}
+
+		// No extensions for this prefix → this auth method didn't match.
+		if !hasTools && !hasResources && !hasPrompts {
+			return nil
+		}
+
+		return &Permission{
+			Identity:          sshPerm.Extensions["identity"],
+			RestrictTools:     tools,
+			RestrictResources: resources,
+			RestrictPrompts:   prompts,
+		}
 	}
-	if v, ok := sshPerm.Extensions["restrict-tools"]; ok {
-		json.Unmarshal([]byte(v), &perm.RestrictTools)
+
+	return &MergedPermission{
+		CertPerms: decodePerm("cert-"),
+		KeyPerms:  decodePerm("key-"),
 	}
-	if v, ok := sshPerm.Extensions["restrict-resources"]; ok {
-		json.Unmarshal([]byte(v), &perm.RestrictResources)
-	}
-	if v, ok := sshPerm.Extensions["restrict-prompts"]; ok {
-		json.Unmarshal([]byte(v), &perm.RestrictPrompts)
-	}
-	return perm
 }
 
 func (h *SSHHandler) handleConn(ctx context.Context, tcpConn net.Conn) {
@@ -322,7 +369,7 @@ func (h *SSHHandler) handleConn(ctx context.Context, tcpConn net.Conn) {
 	// Discard global requests (keepalive responses are handled by the library).
 	go ssh.DiscardRequests(reqs)
 
-	perm := permFromSSH(sshConn.Permissions)
+	perm := mergedPermFromSSH(sshConn.Permissions)
 
 	for newCh := range chans {
 		if newCh.ChannelType() != "session" {
@@ -342,7 +389,7 @@ func (h *SSHHandler) handleConn(ctx context.Context, tcpConn net.Conn) {
 	logger.Info("SSH connection closed", "remote", sshConn.RemoteAddr())
 }
 
-func (h *SSHHandler) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, perm *Permission, conn *ssh.ServerConn) {
+func (h *SSHHandler) handleSession(ctx context.Context, ch ssh.Channel, reqs <-chan *ssh.Request, perm *MergedPermission, conn *ssh.ServerConn) {
 	logger := h.opts.logger()
 
 	for req := range reqs {
@@ -357,7 +404,7 @@ func (h *SSHHandler) handleSession(ctx context.Context, ch ssh.Channel, reqs <-c
 			}
 
 			req.Reply(true, nil)
-			logger.Info("subsystem started", "subsystem", subsystem, "identity", perm.Identity)
+			logger.Info("subsystem started", "subsystem", subsystem, "identity", perm.Identity())
 
 			h.serveMCP(ctx, ch, perm)
 			return
@@ -378,7 +425,7 @@ func (h *SSHHandler) handleSession(ctx context.Context, ch ssh.Channel, reqs <-c
 	}
 }
 
-func (h *SSHHandler) serveMCP(ctx context.Context, ch ssh.Channel, perm *Permission) {
+func (h *SSHHandler) serveMCP(ctx context.Context, ch ssh.Channel, perm *MergedPermission) {
 	logger := h.opts.logger()
 
 	// Wrap SSH channel as MCP transport, injecting identity into requests.
@@ -394,7 +441,7 @@ func (h *SSHHandler) serveMCP(ctx context.Context, ch ssh.Channel, perm *Permiss
 	server := h.getServer()
 	ss, err := server.Connect(sessionCtx, transport, nil)
 	if err != nil {
-		logger.Error("MCP connect error", "error", err, "identity", perm.Identity)
+		logger.Error("MCP connect error", "error", err, "identity", perm.Identity())
 		cancel()
 		ch.Close()
 		return
@@ -408,9 +455,9 @@ func (h *SSHHandler) serveMCP(ctx context.Context, ch ssh.Channel, perm *Permiss
 	// Wait for session end.
 	err = ss.Wait()
 	if err != nil {
-		logger.Debug("MCP session ended", "error", err, "identity", perm.Identity)
+		logger.Debug("MCP session ended", "error", err, "identity", perm.Identity())
 	} else {
-		logger.Info("MCP session ended", "identity", perm.Identity)
+		logger.Info("MCP session ended", "identity", perm.Identity())
 	}
 
 	cancel()

@@ -53,7 +53,12 @@ func newTestEnv(t *testing.T, perm *Permission) *testEnv {
 	// Set up authorized keys.
 	fp := ssh.FingerprintSHA256(sshPub)
 	if perm == nil {
-		perm = &Permission{Identity: "test-user"}
+		perm = &Permission{
+			Identity:          "test-user",
+			RestrictTools:     []string{"*"},
+			RestrictResources: []string{"*"},
+			RestrictPrompts:   []string{"*"},
+		}
 	}
 	ak := NewAuthorizedKeys(map[string]*Permission{fp: perm})
 
@@ -73,9 +78,9 @@ func newTestEnv(t *testing.T, perm *Permission) *testEnv {
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Return identity from TransportAuth if present.
 		if req.Extra != nil {
-			if p, ok := req.Extra.TransportAuth.(*Permission); ok {
+			if mp, ok := req.Extra.TransportAuth.(*MergedPermission); ok {
 				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("identity:%s", p.Identity)}},
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("identity:%s", mp.Identity())}},
 				}, nil
 			}
 		}
@@ -166,8 +171,10 @@ func TestSSHServer_BasicConnection(t *testing.T) {
 
 func TestSSHServer_TransportAuth(t *testing.T) {
 	perm := &Permission{
-		Identity:      "alice",
-		RestrictTools: []string{"echo", "whoami"},
+		Identity:          "alice",
+		RestrictTools:     []string{"echo", "whoami"},
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
 	}
 	env := newTestEnv(t, perm)
 	defer env.Close()

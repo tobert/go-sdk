@@ -8,15 +8,15 @@ import "context"
 
 type permissionsKey struct{}
 
-// ContextWithPermissions returns a context carrying the given Permission.
+// ContextWithPermissions returns a context carrying the given MergedPermission.
 // The permission can be retrieved later with PermissionsFromContext.
-func ContextWithPermissions(ctx context.Context, p *Permission) context.Context {
+func ContextWithPermissions(ctx context.Context, p *MergedPermission) context.Context {
 	return context.WithValue(ctx, permissionsKey{}, p)
 }
 
-// PermissionsFromContext extracts the Permission from the context, or nil
+// PermissionsFromContext extracts the MergedPermission from the context, or nil
 // if the context has no permissions (e.g., non-SSH transport).
-func PermissionsFromContext(ctx context.Context) *Permission {
-	p, _ := ctx.Value(permissionsKey{}).(*Permission)
+func PermissionsFromContext(ctx context.Context) *MergedPermission {
+	p, _ := ctx.Value(permissionsKey{}).(*MergedPermission)
 	return p
 }

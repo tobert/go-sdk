@@ -11,11 +11,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// authTransport wraps an mcp.Transport to inject SSH Permission into
+// authTransport wraps an mcp.Transport to inject SSH MergedPermission into
 // RequestExtra.TransportAuth on every incoming request.
 type authTransport struct {
 	inner mcp.Transport
-	perm  *Permission
+	perm  *MergedPermission
 }
 
 func (t *authTransport) Connect(ctx context.Context) (mcp.Connection, error) {
@@ -26,11 +26,11 @@ func (t *authTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	return &authConnection{inner: conn, perm: t.perm}, nil
 }
 
-// authConnection wraps an mcp.Connection to inject Permission into incoming
-// JSON-RPC requests.
+// authConnection wraps an mcp.Connection to inject MergedPermission into
+// incoming JSON-RPC requests.
 type authConnection struct {
 	inner mcp.Connection
-	perm  *Permission
+	perm  *MergedPermission
 }
 
 func (c *authConnection) Read(ctx context.Context) (jsonrpc.Message, error) {

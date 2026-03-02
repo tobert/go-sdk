@@ -1,7 +1,6 @@
 package sshtransport
 
 import (
-	"encoding/json"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -28,14 +27,15 @@ func PermissionsFromCertificate(cert *ssh.Certificate) *Permission {
 		RestrictPrompts:   []string{"*"},
 	}
 
-	// Extensions override the defaults when present.
-	if v, ok := cert.Extensions[extRestrictTools]; ok && v != "" {
+	// Extensions override the defaults when present. An empty extension
+	// string produces an empty slice (deny), not fall-through to ["*"].
+	if v, ok := cert.Extensions[extRestrictTools]; ok {
 		perm.RestrictTools = splitPatterns(v)
 	}
-	if v, ok := cert.Extensions[extRestrictResources]; ok && v != "" {
+	if v, ok := cert.Extensions[extRestrictResources]; ok {
 		perm.RestrictResources = splitPatterns(v)
 	}
-	if v, ok := cert.Extensions[extRestrictPrompts]; ok && v != "" {
+	if v, ok := cert.Extensions[extRestrictPrompts]; ok {
 		perm.RestrictPrompts = splitPatterns(v)
 	}
 
@@ -107,60 +107,69 @@ func mergedRestrictions(a, b []string) []string {
 
 // MergedPermission provides proper AND-logic authorization checking
 // across certificate and authorized key permissions.
+//
+// If only one auth method matched (e.g. key-only or cert-only), the
+// other side is nil and only the present side is checked. If both
+// sides matched, a request must be allowed by both to succeed.
 type MergedPermission struct {
 	CertPerms *Permission
 	KeyPerms  *Permission
 }
 
-// AllowTool returns true only if both cert and key permissions allow the tool.
+// Identity returns the preferred identity string: certificate identity
+// first, falling back to authorized key identity.
+func (mp *MergedPermission) Identity() string {
+	if mp == nil {
+		return ""
+	}
+	if mp.CertPerms != nil && mp.CertPerms.Identity != "" {
+		return mp.CertPerms.Identity
+	}
+	if mp.KeyPerms != nil {
+		return mp.KeyPerms.Identity
+	}
+	return ""
+}
+
+// AllowTool returns true if the present permission sets allow the tool.
+// A nil side is treated as "not applicable" (only the other side is checked).
 func (mp *MergedPermission) AllowTool(name string) bool {
+	if mp == nil {
+		return false
+	}
+	if mp.CertPerms == nil {
+		return mp.KeyPerms.AllowTool(name)
+	}
+	if mp.KeyPerms == nil {
+		return mp.CertPerms.AllowTool(name)
+	}
 	return mp.CertPerms.AllowTool(name) && mp.KeyPerms.AllowTool(name)
 }
 
-// AllowResource returns true only if both cert and key permissions allow the resource.
+// AllowResource returns true if the present permission sets allow the resource.
 func (mp *MergedPermission) AllowResource(uri string) bool {
+	if mp == nil {
+		return false
+	}
+	if mp.CertPerms == nil {
+		return mp.KeyPerms.AllowResource(uri)
+	}
+	if mp.KeyPerms == nil {
+		return mp.CertPerms.AllowResource(uri)
+	}
 	return mp.CertPerms.AllowResource(uri) && mp.KeyPerms.AllowResource(uri)
 }
 
-// AllowPrompt returns true only if both cert and key permissions allow the prompt.
+// AllowPrompt returns true if the present permission sets allow the prompt.
 func (mp *MergedPermission) AllowPrompt(name string) bool {
+	if mp == nil {
+		return false
+	}
+	if mp.CertPerms == nil {
+		return mp.KeyPerms.AllowPrompt(name)
+	}
+	if mp.KeyPerms == nil {
+		return mp.CertPerms.AllowPrompt(name)
+	}
 	return mp.CertPerms.AllowPrompt(name) && mp.KeyPerms.AllowPrompt(name)
-}
-
-// ToPermission converts a MergedPermission to a flat Permission by evaluating
-// both sets. This is a lossy conversion — use MergedPermission directly
-// when both cert and key permissions are available.
-func (mp *MergedPermission) ToPermission() *Permission {
-	return MergePermissions(mp.CertPerms, mp.KeyPerms)
-}
-
-// encodeMerged is used internally to store merged permissions in
-// ssh.Permissions.Extensions for transport through the SSH layer.
-func encodeMerged(certPerms, keyPerms *Permission) map[string]string {
-	ext := make(map[string]string)
-
-	identity := ""
-	if certPerms != nil {
-		identity = certPerms.Identity
-	}
-	if identity == "" && keyPerms != nil {
-		identity = keyPerms.Identity
-	}
-	ext["identity"] = identity
-
-	merged := MergePermissions(certPerms, keyPerms)
-	if merged.RestrictTools != nil {
-		data, _ := json.Marshal(merged.RestrictTools)
-		ext["restrict-tools"] = string(data)
-	}
-	if merged.RestrictResources != nil {
-		data, _ := json.Marshal(merged.RestrictResources)
-		ext["restrict-resources"] = string(data)
-	}
-	if merged.RestrictPrompts != nil {
-		data, _ := json.Marshal(merged.RestrictPrompts)
-		ext["restrict-prompts"] = string(data)
-	}
-
-	return ext
 }
