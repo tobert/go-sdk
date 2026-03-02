@@ -112,15 +112,23 @@ func mergedRestrictions(a, b []string) []string {
 // other side is nil and only the present side is checked. If both
 // sides matched, a request must be allowed by both to succeed.
 type MergedPermission struct {
+	// identity is the resolved identity string, stored directly so it
+	// survives the SSH extension round-trip even when both perm sides
+	// have no restriction extensions.
+	identity  string
 	CertPerms *Permission
 	KeyPerms  *Permission
 }
 
-// Identity returns the preferred identity string: certificate identity
-// first, falling back to authorized key identity.
+// Identity returns the identity string for this authenticated session.
+// It checks the cached identity first (set during SSH round-trip), then
+// falls back to cert identity, then key identity.
 func (mp *MergedPermission) Identity() string {
 	if mp == nil {
 		return ""
+	}
+	if mp.identity != "" {
+		return mp.identity
 	}
 	if mp.CertPerms != nil && mp.CertPerms.Identity != "" {
 		return mp.CertPerms.Identity

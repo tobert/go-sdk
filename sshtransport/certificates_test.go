@@ -316,3 +316,55 @@ func TestMergedPermission_Identity(t *testing.T) {
 		t.Errorf("nil Identity() = %q, want empty", nilMP.Identity())
 	}
 }
+
+func TestPermEncoding_RoundTrip(t *testing.T) {
+	// Normal case: both sides with restrictions.
+	certPerm := &Permission{
+		Identity:          "alice",
+		RestrictTools:     []string{"query_*"},
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
+	}
+	keyPerm := &Permission{
+		Identity:          "alice-workstation",
+		RestrictTools:     []string{"query_spans"},
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
+	}
+
+	sshPerm := mergedPermToSSH(certPerm, keyPerm)
+	mp := mergedPermFromSSH(sshPerm)
+
+	if mp.Identity() != "alice" {
+		t.Errorf("round-trip identity = %q, want %q", mp.Identity(), "alice")
+	}
+	if !mp.AllowTool("query_spans") {
+		t.Error("round-trip should allow query_spans")
+	}
+	if mp.AllowTool("list_traces") {
+		t.Error("round-trip should NOT allow list_traces")
+	}
+
+	// Edge case: cert with nil restrictions (deny all tools).
+	denyCert := &Permission{
+		Identity:          "restricted",
+		RestrictTools:     nil, // deny
+		RestrictResources: []string{"*"},
+		RestrictPrompts:   []string{"*"},
+	}
+	sshPerm2 := mergedPermToSSH(denyCert, nil)
+	mp2 := mergedPermFromSSH(sshPerm2)
+
+	if mp2.Identity() != "restricted" {
+		t.Errorf("deny cert identity = %q, want %q", mp2.Identity(), "restricted")
+	}
+	if mp2.CertPerms == nil {
+		t.Fatal("deny cert: CertPerms should not be nil")
+	}
+	if mp2.AllowTool("anything") {
+		t.Error("deny cert: should deny all tools")
+	}
+	if !mp2.AllowResource("anything") {
+		t.Error("deny cert: should allow all resources")
+	}
+}

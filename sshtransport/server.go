@@ -278,18 +278,15 @@ func mergedPermToSSH(certPerm, keyPerm *Permission) *ssh.Permissions {
 		if perm == nil {
 			return
 		}
-		if perm.RestrictTools != nil {
-			data, _ := json.Marshal(perm.RestrictTools)
-			ext[prefix+"restrict-tools"] = string(data)
-		}
-		if perm.RestrictResources != nil {
-			data, _ := json.Marshal(perm.RestrictResources)
-			ext[prefix+"restrict-resources"] = string(data)
-		}
-		if perm.RestrictPrompts != nil {
-			data, _ := json.Marshal(perm.RestrictPrompts)
-			ext[prefix+"restrict-prompts"] = string(data)
-		}
+		// Always encode all three fields when perm is non-nil so that
+		// mergedPermFromSSH can distinguish "no auth" (no extensions) from
+		// "auth with deny-all" (extensions present, null values).
+		data, _ := json.Marshal(perm.RestrictTools)
+		ext[prefix+"restrict-tools"] = string(data)
+		data, _ = json.Marshal(perm.RestrictResources)
+		ext[prefix+"restrict-resources"] = string(data)
+		data, _ = json.Marshal(perm.RestrictPrompts)
+		ext[prefix+"restrict-prompts"] = string(data)
 	}
 
 	encodePerm("cert-", certPerm)
@@ -340,6 +337,7 @@ func mergedPermFromSSH(sshPerm *ssh.Permissions) *MergedPermission {
 	}
 
 	return &MergedPermission{
+		identity:  sshPerm.Extensions["identity"],
 		CertPerms: decodePerm("cert-"),
 		KeyPerms:  decodePerm("key-"),
 	}
